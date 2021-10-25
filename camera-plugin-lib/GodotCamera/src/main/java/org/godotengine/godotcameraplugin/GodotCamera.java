@@ -4,11 +4,14 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.hardware.Camera;
 import android.util.Log;
 import android.view.View;
 import android.widget.FrameLayout;
-import android.widget.RelativeLayout;
+import android.widget.LinearLayout;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -21,7 +24,16 @@ import org.godotengine.godot.plugin.GodotPlugin;
 import org.godotengine.godot.plugin.SignalInfo;
 import org.godotengine.godot.plugin.UsedByGodot;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.security.PublicKey;
+import java.security.interfaces.RSAKey;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Arrays;
 import java.util.Set;
+
+import javax.crypto.Cipher;
 
 
 public class GodotCamera extends GodotPlugin {
@@ -29,8 +41,9 @@ public class GodotCamera extends GodotPlugin {
     private static final String TAG = "GodotCamera";
     private Camera mCamera;
     private CameraPreview mPreview;
+    private CameraState cameraState = null;
     private FrameLayout layout = null;
-    private RelativeLayout previewLayout = null;
+    private LinearLayout previewLayout = null;
     private boolean isCameraVisible = false;
 
     public GodotCamera(Godot godot) {
@@ -44,6 +57,10 @@ public class GodotCamera extends GodotPlugin {
         return layout;
     }
 
+    @Override
+    public boolean shouldBeOnTop() {
+        return false;
+    }
 
     @NonNull
     @Override
@@ -79,7 +96,7 @@ public class GodotCamera extends GodotPlugin {
 
     @UsedByGodot
     public void showCamera(int width , int height , int x , int y){
-        getActivity().runOnUiThread(() -> {
+        getGodot().runOnUiThread(() -> {
             try{
                 if(isCameraVisible){
                     return;
@@ -89,6 +106,7 @@ public class GodotCamera extends GodotPlugin {
                     mCamera.startPreview();
                     layout.addView(previewLayout);
                     isCameraVisible = true;
+                    cameraState = CameraState.CAM_STATE_READY;
                     return;
                 }
 
@@ -103,7 +121,7 @@ public class GodotCamera extends GodotPlugin {
 
     @UsedByGodot
     public void hideCamera(){
-        getActivity().runOnUiThread(()->{
+        getGodot().runOnUiThread(()->{
             try{
                 if(isCameraVisible){
                     mCamera.stopPreview();
@@ -116,19 +134,51 @@ public class GodotCamera extends GodotPlugin {
         });
     }
 
+    @UsedByGodot
+    public void takePicture(){
+        try{
+            if(cameraState == CameraState.CAM_STATE_BUSY){
+                return;
+            }
+
+            cameraState = CameraState.CAM_STATE_BUSY;
+
+            mCamera.takePicture(null, null, new Camera.PictureCallback() {
+                @Override
+                public void onPictureTaken(byte[] bytes, Camera camera) {
+                    Log.d(TAG, "onPictureTaken: " + Arrays.toString(bytes));
+                    mCamera.startPreview();
+                    cameraState = CameraState.CAM_STATE_READY;
+
+//                    Bitmap bitmap = BitmapTools.toBitmap(bytes);
+//                    bitmap = BitmapTools.rotate(bitmap, 90);
+//                    byte[] byteImg = BitmapTools.toByte(bitmap);
+
+
+                    emitSignal("on_picture_taken",bytes);
+
+                }
+            });
+        }catch(Exception e){
+            Log.e(TAG, "takePicture: ", e);
+        }
+    }
+
 
     private void openCamera(){
 
-        getActivity().runOnUiThread(() -> {
+        getGodot().runOnUiThread(() -> {
             try {
                 // Create an instance of Camera
                 mCamera = getCameraInstance();
 
                 // Create our Preview view and set it as the content of our activity.
                 mPreview = new CameraPreview(getActivity(), mCamera);
-                previewLayout = new RelativeLayout(getActivity());
+                previewLayout = new LinearLayout(getActivity());
                 previewLayout.addView(mPreview);
                 layout.addView(previewLayout);
+                mPreview.setZOrderOnTop(false);
+
                 isCameraVisible = true;
             }catch (Exception e){
                 Log.e(TAG, "openCamera: ", e);
@@ -173,7 +223,7 @@ public class GodotCamera extends GodotPlugin {
 
 
     public void setCameraDimensions(int width , int height , int x , int y){
-        getActivity().runOnUiThread(() -> {
+        getGodot().runOnUiThread(() -> {
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width,height);
             params.leftMargin = x;
             params.topMargin = y;
@@ -189,10 +239,50 @@ public class GodotCamera extends GodotPlugin {
 
         // interstitial
         signals.add(new SignalInfo("on_permission_result",Boolean.class));
+        signals.add(new SignalInfo("on_picture_taken",byte[].class));
+
 
 
         return signals;
     }
 
+    enum CameraState {
+        CAM_STATE_READY,
+        CAM_STATE_BUSY
+    }
+
+    private static class BitmapTools {
+
+        private static Bitmap toBitmap(byte[] data) {
+            return BitmapFactory.decodeByteArray(data , 0, data.length);
+        }
+
+        private static Bitmap rotate(Bitmap in, int angle) {
+            Matrix mat = new Matrix();
+            mat.postRotate(angle);
+            return Bitmap.createBitmap(in, 0, 0, in.getWidth(), in.getHeight(), mat, true);
+        }
+
+        private static byte[] toByte(Bitmap bitmap){
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG,100,stream);
+
+            return stream.toByteArray();
+        }
+    }
+
+
+    // Decryption function which converts
+    // the ciphertext back to the
+    // original plaintext.
+    public static String do_RSADecryption(byte[] cipherText, RSAPublicKey publicKey) throws Exception
+    {
+        Cipher cipher = Cipher.getInstance("RSA");
+
+        cipher.init(Cipher.DECRYPT_MODE, publicKey);
+        byte[] result = cipher.doFinal(cipherText);
+
+        return new String(result);
+    }
 
 }
